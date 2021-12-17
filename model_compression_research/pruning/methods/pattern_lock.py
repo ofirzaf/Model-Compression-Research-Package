@@ -13,15 +13,15 @@ from ..registry import register_method
 class PatternLockPruningMethod(CustomMaskPruningMethod):
     """Pattern lock pruning method. Locks found sparsity patterns in place and allows only unpruned weights to change"""
 
-    def _init(self):
-        super()._init(self.get_sparsity_pattern_mask())
+    def init_callback(self):
+        super().init_callback(self.get_sparsity_pattern_mask())
 
     def get_sparsity_pattern_mask(self):
         original = getattr(self.module, self.name)
         return original.ne(0.).to(original.dtype)
 
-    def _update_mask(self):
-        return super()._update_mask(self.get_sparsity_pattern_mask())
+    def update_mask_callback(self):
+        return super().update_mask_callback(self.get_sparsity_pattern_mask())
 
 
 def lock_tensor_sparsity_pattern(module, name='weight'):

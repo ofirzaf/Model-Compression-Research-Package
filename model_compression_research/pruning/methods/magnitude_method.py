@@ -13,7 +13,7 @@ from itertools import chain
 import torch
 from torch.nn import functional as F
 
-from .method import PruningMethod
+from .method import WeightPruningMethod
 from .methods_utils import calc_pruning_threshold
 from ..registry import register_method
 
@@ -23,10 +23,10 @@ BLOCK_POOLING_FN_LUT = {'max': F.max_pool2d,
 
 
 @register_method('iterative', 'one_shot', name='unstructured_magnitude')
-class UnstructuredMagnitudePruningMethod(PruningMethod):
+class UnstructuredMagnitudePruningMethod(WeightPruningMethod):
     """Unstructured magnitude pruning"""
 
-    def _init(self, target_sparsity=0., initial_sparsity=0., threshold_decay=0.):
+    def init_callback(self, target_sparsity=0., initial_sparsity=0., threshold_decay=0.):
         self.register_name('original')
         self.register_name('mask')
         self.target_sparsity = target_sparsity
@@ -47,7 +47,7 @@ class UnstructuredMagnitudePruningMethod(PruningMethod):
             tensor, self._current_sparsity, self._threshold, self.threshold_decay)
 
     @torch.no_grad()
-    def _compute_mask(self):
+    def compute_mask_callback(self):
         """Compute mask to zero all low magnitude weights"""
         # calculate new threshold
         original = self.get_parameters('original').abs()
@@ -60,7 +60,7 @@ class UnstructuredMagnitudePruningMethod(PruningMethod):
         original, mask = self.get_parameters('original', 'mask', module=module)
         return original * mask
 
-    def _update_mask(self, sparsity_schedule=None):
+    def update_mask_callback(self, sparsity_schedule=None):
         """Updates mask of pruned layer according to new target sparsity if one is provided"""
         if sparsity_schedule is not None:
             self._current_sparsity = self.initial_sparsity + \
@@ -78,8 +78,8 @@ class UnstructuredMagnitudePruningMethod(PruningMethod):
 class UniformMagnitudePruningMethod(UnstructuredMagnitudePruningMethod):
     """Uniform magnitude pruning"""
 
-    def _init(self, target_sparsity=0., initial_sparsity=0., block_size=1):
-        super()._init(target_sparsity=target_sparsity, initial_sparsity=initial_sparsity)
+    def init_callback(self, target_sparsity=0., initial_sparsity=0., block_size=1):
+        super().init_callback(target_sparsity=target_sparsity, initial_sparsity=initial_sparsity)
         self.block_size = block_size
 
     def _update_threshold(self, tensor):
@@ -88,7 +88,7 @@ class UniformMagnitudePruningMethod(UnstructuredMagnitudePruningMethod):
             tensor, self._current_sparsity, block_size=self.block_size).unsqueeze(-1)
 
     @torch.no_grad()
-    def _compute_mask(self):
+    def compute_mask_callback(self):
         """Compute mask to zero all low magnitude weights"""
         # calculate new threshold
         original = self.get_parameters('original').abs()
@@ -104,10 +104,10 @@ class UniformMagnitudePruningMethod(UnstructuredMagnitudePruningMethod):
 class BlockStructuredMagnitudePruningMethod(UnstructuredMagnitudePruningMethod):
     """Block magnitude pruning"""
 
-    def _init(self, target_sparsity=0., initial_sparsity=0., threshold_decay=0., block_dims=1, pooling_type='avg'):
+    def init_callback(self, target_sparsity=0., initial_sparsity=0., threshold_decay=0., block_dims=1, pooling_type='avg'):
         self.block_dims = block_dims
         self.pooling_type = pooling_type
-        super()._init(target_sparsity, initial_sparsity, threshold_decay)
+        super().init_callback(target_sparsity, initial_sparsity, threshold_decay)
         # Handle block dims
         original_dims = len(
             getattr(self.module, self.get_name('original')).size())
@@ -135,7 +135,7 @@ class BlockStructuredMagnitudePruningMethod(UnstructuredMagnitudePruningMethod):
                 list(BLOCK_POOLING_FN_LUT.keys()), self.pooling_type))
 
     @torch.no_grad()
-    def _compute_mask(self):
+    def compute_mask_callback(self):
         """Compute mask to zero all low magnitude weights"""
         # calculate new threshold
         original = self.get_parameters('original').abs()
@@ -234,14 +234,14 @@ class UnstructuredSparsityGroup:
         return self.threshold
 
 
-class GroupedUnstructuredMagnitudePruningMethod(PruningMethod):
+class GroupedUnstructuredMagnitudePruningMethod(WeightPruningMethod):
     """
     Grouped maginitude pruning. This method calculates a global threshold for each group of 
     weights being pruned resulting in un-uniform sparsity in the weights.
     """
     GROUPS = defaultdict(UnstructuredSparsityGroup)
 
-    def _init(
+    def init_callback(
         self,
         group='default',
         group_target_sparsity=0.,
@@ -266,7 +266,7 @@ class GroupedUnstructuredMagnitudePruningMethod(PruningMethod):
         )
 
     @torch.no_grad()
-    def _compute_mask(self):
+    def compute_mask_callback(self):
         original = self.get_parameters('original').abs()
         new_mask = (original > self.group.compute_new_threshold()).to(
             original.dtype)
@@ -285,7 +285,7 @@ class GroupedUnstructuredMagnitudePruningMethod(PruningMethod):
                 self.group.threshold_decay)
         return s
 
-    def _update_mask(self, sparsity_schedule=None):
+    def update_mask_callback(self, sparsity_schedule=None):
         if sparsity_schedule is not None:
             self.group.update_sparsity(sparsity_schedule)
 
@@ -312,7 +312,7 @@ class GlobalUnstructuredMagnitudePruningMethod(GroupedUnstructuredMagnitudePruni
     weights being pruned resulting in un-uniform sparsity in the weights.
     """
 
-    def _init(
+    def init_callback(
         self,
         group_target_sparsity=0.,
         group_initial_sparsity=0.,

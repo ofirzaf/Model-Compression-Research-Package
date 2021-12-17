@@ -7,16 +7,16 @@ Apply custom pruning mask on weight
 """
 import logging
 
-from .method import PruningMethod
+from .method import WeightPruningMethod
 
 
 logger = logging.getLogger(__name__)
 
 
-class CustomMaskPruningMethod(PruningMethod):
+class CustomMaskPruningMethod(WeightPruningMethod):
     """Prune the target tensor using a given mask"""
 
-    def _init(self, init_mask):
+    def init_callback(self, init_mask):
         self.register_name('original')
         self.register_name('mask')
         original = getattr(self.module, self.name)
@@ -35,14 +35,14 @@ class CustomMaskPruningMethod(PruningMethod):
                 mask = mask.to(original.dtype)
             self.set_parameter('mask', mask.to(original.device))
 
-    def _compute_mask(self):
-        return super()._compute_mask()
+    def compute_mask_callback(self):
+        return super().compute_mask_callback()
 
     def masked_weight(self, module):
         original, mask = self.get_parameters('original', 'mask', module=module)
         return original * mask
 
-    def _update_mask(self, mask=None):
+    def update_mask_callback(self, mask=None):
         if mask is not None:
             self._set_mask(mask)
 

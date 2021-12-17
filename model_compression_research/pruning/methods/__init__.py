@@ -7,3 +7,4 @@ from .custom_method import *
 from .neural_wiring_method import *
 from .pattern_lock import *
 from .method import *
+from .magnitude_activation import *

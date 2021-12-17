@@ -13,7 +13,7 @@ from torch import nn
 from model_compression_research import (
     unstructured_neural_wiring_pruning,
     block_structured_neural_wiring_pruning,
-    PruningMethod,
+    WeightPruningMethod,
     remove_pruning,
     get_tensor_sparsity_ratio,
 )
@@ -29,7 +29,7 @@ class TestDNWPruningMethod(unittest.TestCase):
             linear, threshold_decay=0.8)[0]
         original, mask, method = linear.get_pruning_parameters(
             'original', 'mask', 'method')
-        self.assertTrue(isinstance(method, PruningMethod))
+        self.assertTrue(isinstance(method, WeightPruningMethod))
         self.assertTrue(hasattr(linear, 'weight'))
         self.assertTrue(type(linear.weight) is torch.Tensor)
         self.assertTrue((original == weight).all())
@@ -39,7 +39,7 @@ class TestDNWPruningMethod(unittest.TestCase):
 
         def check_pruning_method(module, threshold_decay):
             for _, hook in module._forward_pre_hooks.items():
-                if isinstance(hook, PruningMethod) and hook.name == 'weight':
+                if isinstance(hook, WeightPruningMethod) and hook.name == 'weight':
                     if hook.threshold_decay == threshold_decay:
                         return True
             return False
@@ -59,7 +59,7 @@ class TestDNWPruningMethod(unittest.TestCase):
 
         def check_pruning_method(module):
             for _, hook in module._forward_pre_hooks.items():
-                if isinstance(hook, PruningMethod) and hook.name == 'weight':
+                if isinstance(hook, WeightPruningMethod) and hook.name == 'weight':
                     return True
             return False
         self.assertFalse(check_pruning_method(linear))
@@ -112,7 +112,7 @@ class TestBlockDNWPruningMethod(unittest.TestCase):
             linear, threshold_decay=0.8)[0]
         original, mask, method = linear.get_pruning_parameters(
             'original', 'mask', 'method')
-        self.assertTrue(isinstance(method, PruningMethod))
+        self.assertTrue(isinstance(method, WeightPruningMethod))
         self.assertTrue(hasattr(linear, 'weight'))
         self.assertTrue(type(linear.weight) is torch.Tensor)
         self.assertTrue((original == weight).all())
@@ -122,7 +122,7 @@ class TestBlockDNWPruningMethod(unittest.TestCase):
 
         def check_pruning_method(module, threshold_decay):
             for _, hook in module._forward_pre_hooks.items():
-                if isinstance(hook, PruningMethod) and hook.name == 'weight':
+                if isinstance(hook, WeightPruningMethod) and hook.name == 'weight':
                     if hook.threshold_decay == threshold_decay:
                         return True
             return False
@@ -142,7 +142,7 @@ class TestBlockDNWPruningMethod(unittest.TestCase):
 
         def check_pruning_method(module):
             for _, hook in module._forward_pre_hooks.items():
-                if isinstance(hook, PruningMethod) and hook.name == 'weight':
+                if isinstance(hook, WeightPruningMethod) and hook.name == 'weight':
                     return True
             return False
         self.assertFalse(check_pruning_method(linear))

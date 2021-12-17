@@ -11,7 +11,7 @@ import torch
 from torch import nn
 
 from model_compression_research import (custom_mask_pruning,
-                                        PruningMethod,
+                                        WeightPruningMethod,
                                         remove_pruning,
                                         )
 
@@ -37,7 +37,7 @@ class TestCustomMaskPruningMethod(unittest.TestCase):
         linear = custom_mask_pruning(linear, mask=true_mask)[0]
         original, mask, method = linear.get_pruning_parameters(
             'original', 'mask', 'method')
-        self.assertTrue(isinstance(method, PruningMethod))
+        self.assertTrue(isinstance(method, WeightPruningMethod))
         self.assertTrue(hasattr(linear, 'weight'))
         self.assertTrue(type(linear.weight) is torch.Tensor)
         self.assertTrue(
@@ -47,7 +47,7 @@ class TestCustomMaskPruningMethod(unittest.TestCase):
 
         def check_pruning_method(module):
             for _, hook in module._forward_pre_hooks.items():
-                if isinstance(hook, PruningMethod) and hook.name == 'weight':
+                if isinstance(hook, WeightPruningMethod) and hook.name == 'weight':
                     return True
             return False
         self.assertTrue(check_pruning_method(linear))
@@ -64,7 +64,7 @@ class TestCustomMaskPruningMethod(unittest.TestCase):
 
         def check_pruning_method(module):
             for _, hook in module._forward_pre_hooks.items():
-                if isinstance(hook, PruningMethod) and hook.name == 'weight':
+                if isinstance(hook, WeightPruningMethod) and hook.name == 'weight':
                     return True
             return False
         self.assertFalse(check_pruning_method(linear))

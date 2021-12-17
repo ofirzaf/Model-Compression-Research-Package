@@ -15,7 +15,7 @@ from model_compression_research import (
     block_structured_magnitude_pruning,
     UnstructuredSparsityGroup,
     grouped_unstructured_magnitude_pruning,
-    PruningMethod,
+    WeightPruningMethod,
     remove_pruning,
     get_tensor_sparsity_ratio,
     uniform_magnitude_pruning,
@@ -31,7 +31,7 @@ class TestMagnitudePruningMethod(unittest.TestCase):
         linear = unstructured_magnitude_pruning(linear, threshold_decay=0.8)[0]
         original, mask, method = linear.get_pruning_parameters(
             'original', 'mask', 'method')
-        self.assertTrue(isinstance(method, PruningMethod))
+        self.assertTrue(isinstance(method, WeightPruningMethod))
         self.assertTrue(hasattr(linear, 'weight'))
         self.assertTrue(type(linear.weight) is torch.Tensor)
         self.assertTrue((original == weight).all())
@@ -41,7 +41,7 @@ class TestMagnitudePruningMethod(unittest.TestCase):
 
         def check_pruning_method(module, threshold_decay):
             for _, hook in module._forward_pre_hooks.items():
-                if isinstance(hook, PruningMethod) and hook.name == 'weight':
+                if isinstance(hook, WeightPruningMethod) and hook.name == 'weight':
                     if hook.threshold_decay == threshold_decay:
                         return True
             return False
@@ -61,7 +61,7 @@ class TestMagnitudePruningMethod(unittest.TestCase):
 
         def check_pruning_method(module):
             for _, hook in module._forward_pre_hooks.items():
-                if isinstance(hook, PruningMethod) and hook.name == 'weight':
+                if isinstance(hook, WeightPruningMethod) and hook.name == 'weight':
                     return True
             return False
         self.assertFalse(check_pruning_method(linear))
@@ -126,7 +126,7 @@ class TestUniformMagnitudePruningMethod(unittest.TestCase):
         uniform_magnitude_pruning(self.linear)
         original, mask, method = self.linear.get_pruning_parameters(
             'original', 'mask', 'method')
-        self.assertTrue(isinstance(method, PruningMethod))
+        self.assertTrue(isinstance(method, WeightPruningMethod))
         self.assertTrue(hasattr(self.linear, 'weight'))
         self.assertTrue(type(self.linear.weight) is torch.Tensor)
         self.assertTrue((original == self.weight).all())
@@ -136,7 +136,7 @@ class TestUniformMagnitudePruningMethod(unittest.TestCase):
 
         def check_pruning_method(module):
             for _, hook in module._forward_pre_hooks.items():
-                if isinstance(hook, PruningMethod) and hook.name == 'weight':
+                if isinstance(hook, WeightPruningMethod) and hook.name == 'weight':
                     return True
             return False
         self.assertTrue(check_pruning_method(self.linear))
@@ -151,7 +151,7 @@ class TestUniformMagnitudePruningMethod(unittest.TestCase):
 
         def check_pruning_method(module):
             for _, hook in module._forward_pre_hooks.items():
-                if isinstance(hook, PruningMethod) and hook.name == 'weight':
+                if isinstance(hook, WeightPruningMethod) and hook.name == 'weight':
                     return True
             return False
         self.assertFalse(check_pruning_method(self.linear))
@@ -257,7 +257,7 @@ class TestGroupedUnstructuredMagnitudePruningMethod(unittest.TestCase):
         linear = grouped_unstructured_magnitude_pruning(linear)[0]
         original, mask, method = linear.get_pruning_parameters(
             'original', 'mask', 'method')
-        self.assertTrue(isinstance(method, PruningMethod))
+        self.assertTrue(isinstance(method, WeightPruningMethod))
         self.assertTrue(hasattr(linear, 'weight'))
         self.assertTrue(type(linear.weight) is torch.Tensor)
         self.assertTrue((original == weight).all())
@@ -267,7 +267,7 @@ class TestGroupedUnstructuredMagnitudePruningMethod(unittest.TestCase):
 
         def check_pruning_method(module):
             for _, hook in module._forward_pre_hooks.items():
-                if isinstance(hook, PruningMethod) and hook.name == 'weight':
+                if isinstance(hook, WeightPruningMethod) and hook.name == 'weight':
                     return True
             return False
         self.assertTrue(check_pruning_method(linear))
@@ -284,7 +284,7 @@ class TestGroupedUnstructuredMagnitudePruningMethod(unittest.TestCase):
 
         def check_pruning_method(module):
             for _, hook in module._forward_pre_hooks.items():
-                if isinstance(hook, PruningMethod) and hook.name == 'weight':
+                if isinstance(hook, WeightPruningMethod) and hook.name == 'weight':
                     return True
             return False
         self.assertFalse(check_pruning_method(linear))
@@ -367,7 +367,7 @@ class TestBlockMagnitudePruningMethod(unittest.TestCase):
             linear, threshold_decay=0.8)[0]
         original, mask, method = linear.get_pruning_parameters(
             'original', 'mask', 'method')
-        self.assertTrue(isinstance(method, PruningMethod))
+        self.assertTrue(isinstance(method, WeightPruningMethod))
         self.assertTrue(hasattr(linear, 'weight'))
         self.assertTrue(type(linear.weight) is torch.Tensor)
         self.assertTrue((original == weight).all())
@@ -377,7 +377,7 @@ class TestBlockMagnitudePruningMethod(unittest.TestCase):
 
         def check_pruning_method(module, threshold_decay):
             for _, hook in module._forward_pre_hooks.items():
-                if isinstance(hook, PruningMethod) and hook.name == 'weight':
+                if isinstance(hook, WeightPruningMethod) and hook.name == 'weight':
                     if hook.threshold_decay == threshold_decay:
                         return True
             return False
@@ -397,7 +397,7 @@ class TestBlockMagnitudePruningMethod(unittest.TestCase):
 
         def check_pruning_method(module):
             for _, hook in module._forward_pre_hooks.items():
-                if isinstance(hook, PruningMethod) and hook.name == 'weight':
+                if isinstance(hook, WeightPruningMethod) and hook.name == 'weight':
                     return True
             return False
         self.assertFalse(check_pruning_method(linear))
