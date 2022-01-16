@@ -19,6 +19,7 @@ from model_compression_research import (
     remove_pruning,
     get_tensor_sparsity_ratio,
     uniform_magnitude_pruning,
+    GlobalUnstructuredMagnitudePruningMethod
 )
 
 
@@ -230,10 +231,10 @@ class TestUnstructuredSparsityGroup(unittest.TestCase):
         group.add(m1)
         group.add(m2)
         group.add(m3)
-        self.assertTrue(len(group.method_list) == 3)
-        self.assertAlmostEqual(group.compute_new_threshold(), 0.)
+        self.assertTrue(len(group.method_dict) == 3)
+        self.assertAlmostEqual(group.get_threshold(), 0.)
         group.target_sparsity = 0.2
-        threshold = group.compute_new_threshold()
+        threshold = group.get_threshold()
         sparsity = []
         for m in [m1, m2, m3]:
             new_mask = (m.get_parameters('original').abs()
@@ -310,7 +311,7 @@ class TestGroupedUnstructuredMagnitudePruningMethod(unittest.TestCase):
         remove_pruning(linear)
         self.assertTrue((tensor == linear.weight).all())
 
-    def test_group_masking(self):
+    def test_group_masking_toy(self):
         l1 = nn.Linear(3, 2)
         w1 = torch.tensor([[1., 2., 3.],
                            [4., 5., 6.]])
@@ -335,6 +336,34 @@ class TestGroupedUnstructuredMagnitudePruningMethod(unittest.TestCase):
         self.assertAlmostEqual(get_tensor_sparsity_ratio(l3.weight), 1 / 6)
         for l in [l1, l2, l3]:
             remove_pruning(l)
+
+    def test_group_masking(self):
+        d = 128
+        n_modules = 10
+        module_list = [nn.Linear(d, d, bias=False) for _ in range(n_modules)]
+        if torch.cuda.is_available():
+            for m in module_list:
+                m.cuda()
+        sparsity = 0.8
+        tolerance = 0.01
+        for i, module in enumerate(module_list):
+            # Increase magnitude of modules to enforce different sparsity ratios between the layers
+            module.weight.data += 0.001 * i * module.weight.sign()
+            GlobalUnstructuredMagnitudePruningMethod(
+                module, group_target_sparsity=sparsity)
+        GlobalUnstructuredMagnitudePruningMethod.update_group_sparsity()
+
+        def test_list_global_sparsity(l, sparsity):
+            concat = torch.cat([module.weight for module in l])
+            self.assertTrue(
+                abs(get_tensor_sparsity_ratio(concat) - sparsity) < tolerance)
+        test_list_global_sparsity(module_list, 0)
+        for sparsity_schedule in [0.25, 0.5, 0.75, 1.0]:
+            for m in module_list:
+                m.get_pruning_parameters(
+                    'method').update_mask(sparsity_schedule)
+            test_list_global_sparsity(
+                module_list, sparsity * sparsity_schedule)
 
     def test_pruning_gradients(self):
         device = torch.device('cpu')

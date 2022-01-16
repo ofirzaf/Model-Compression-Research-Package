@@ -170,7 +170,9 @@ class UnstructuredSparsityGroup:
         self.threshold = 0.
         self.bins = 1024
         self.epsilon = 1e-3
-        self.method_list = []
+        self.method_dict = {}
+        self.threshold_ver = 0
+        self.force_threshold_compute = False
 
     def add(
         self,
@@ -180,7 +182,7 @@ class UnstructuredSparsityGroup:
         group_threshold_decay=None
     ):
         """Add an existing pruning method to group"""
-        self.method_list.append(weakref.ref(method))
+        self.method_dict[weakref.ref(method)] = None
         if group_target_sparsity is not None:
             self.target_sparsity = group_target_sparsity
         if group_initial_sparsity is not None:
@@ -192,14 +194,17 @@ class UnstructuredSparsityGroup:
     def update_sparsity(self, sparsity_schedule=None):
         """Update group sparsity"""
         if sparsity_schedule is not None:
+            old_current = self._current_sparsity
             self._current_sparsity = self.initial_sparsity + \
                 (self.target_sparsity - self.initial_sparsity) * sparsity_schedule
+            if old_current != self._current_sparsity:
+                self.force_threshold_compute = True
 
     def _compute_cdf(self, maximum):
         """Compute the cdf of the pruned tensors in the group"""
         device = maximum.device
         hist = torch.zeros(self.bins, device=device)
-        for m in self.method_list:
+        for m in self.method_dict:
             if m() is not None:
                 hist += torch.histc(getattr(m().module, m().get_name('original')).abs().flatten(),
                                     bins=self.bins, max=maximum.item())
@@ -208,10 +213,9 @@ class UnstructuredSparsityGroup:
     def _comptue_maximum_magnitude(self):
         """Compute the maximum magnitude weight in the group"""
         max_mag = torch.stack([getattr(m().module, m().get_name('original')).abs().max()
-                               for m in self.method_list if m() is not None]).max()
+                               for m in self.method_dict if m() is not None]).max()
         return max_mag
 
-    # TODO(Ofir) check if a hook can be added to avoid doing this calculation multiple times if tensors didn't changed
     def compute_new_threshold(self):
         """Compute the pruning threshold of the group"""
         # get the maximum magnitude of the group
@@ -231,6 +235,23 @@ class UnstructuredSparsityGroup:
                 normed_cdf < self._current_sparsity) * max_mag / self.bins
             self.threshold = self.threshold * self.threshold_decay + \
                 (1 - self.threshold_decay) * new_threshold
+        return self.threshold
+
+    # Keep for each layer a threshold version and the group has its threshold version
+    # when a method calls compute a new threshold:
+    # if method.threshold_version < group_threshold_version return cached threshold
+    # if method.threshold_version == group_threshold_version calculate a new threshold
+    def get_threshold(self, method=None):
+        if method is None:
+            return self.compute_new_threshold()
+        ref = weakref.ref(method)
+        threshold_ver = self.method_dict[ref]
+        assert threshold_ver is None or threshold_ver <= self.threshold_ver
+        if self.force_threshold_compute or threshold_ver is None or threshold_ver == self.threshold_ver:
+            self.compute_new_threshold()
+            self.threshold_ver += 1
+            self.force_threshold_compute = False
+        self.method_dict[ref] = self.threshold_ver
         return self.threshold
 
 
@@ -268,7 +289,7 @@ class GroupedUnstructuredMagnitudePruningMethod(PruningMethod):
     @torch.no_grad()
     def _compute_mask(self):
         original = self.get_parameters('original').abs()
-        new_mask = (original > self.group.compute_new_threshold()).to(
+        new_mask = (original > self.group.get_threshold(self)).to(
             original.dtype)
         self.set_parameter('mask', new_mask)
 
@@ -300,7 +321,7 @@ class GroupedUnstructuredMagnitudePruningMethod(PruningMethod):
         group_o = cls.get_group(group_name)
         if sparsity_schedule is not None:
             group_o.update_sparsity(sparsity_schedule)
-        for m in group_o.method_list:
+        for m in group_o.method_dict:
             if m() is not None:
                 m().update_mask()
 
