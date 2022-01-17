@@ -64,7 +64,6 @@ class TestCalcPruningThreshold(unittest.TestCase):
         thresh = calc_pruning_threshold(self.tensor, 0.75)
         self.assertEqual(thresh, 53)
         thresh = calc_pruning_threshold(self.tensor, 0.)
-        self.assertEqual(thresh, 0.)
         thresh = calc_pruning_threshold(self.tensor, 0.75, 22, 0.5)
         self.assertEqual(thresh, 53 * 0.5 + 22 * 0.5)
 
@@ -79,7 +78,6 @@ class TestCalcPruningThreshold(unittest.TestCase):
         ground_truth = torch.tensor([53, 37, 33, 48])
         self.assertTrue((thresh == ground_truth).all())
         thresh = calc_pruning_threshold(self.tensor, 0., block_size=4)
-        self.assertTrue(thresh == 0.)
         current = torch.tensor([5, 10, 13, 18])
         thresh = calc_pruning_threshold(
             self.tensor, 0.75, current_threshold=current, threshold_decay=0.6, block_size=4)
@@ -92,7 +90,6 @@ class TestCalcPruningThreshold(unittest.TestCase):
         thresh = calc_pruning_threshold(tensor, 0.75)
         self.assertEqual(thresh, 53)
         thresh = calc_pruning_threshold(self.tensor, 0.)
-        self.assertEqual(thresh, 0.)
         thresh = calc_pruning_threshold(self.tensor, 0.75, 22, 0.5)
         self.assertEqual(thresh, 53 * 0.5 + 22 * 0.5)
 

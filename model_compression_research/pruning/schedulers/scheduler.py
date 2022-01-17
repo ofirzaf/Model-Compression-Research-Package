@@ -7,9 +7,17 @@ Base pruning scheduler class
 """
 
 import abc
+from dataclasses import dataclass
 
 from ...utils import Config
 from .schedulers_utils import parse_model_for_pruning
+
+
+@dataclass
+class MethodDict:
+    method: None = None
+    name: str = None
+    kwargs: dict = None
 
 
 class PruningScheduler(abc.ABC):
@@ -52,7 +60,7 @@ class PruningScheduler(abc.ABC):
     def remove_pruning(self):
         """Remove existing pruning methods from model"""
         for method_dict in self.method_dicts:
-            method_dict['method'].remove()
+            method_dict.method.remove()
 
     def tb_log(self):
         """Log scheduler information to tensorboard"""
@@ -61,13 +69,13 @@ class PruningScheduler(abc.ABC):
             total_nonzero = 0
             total_params = 0
             for method_dict in self.method_dicts:
-                method = method_dict['method']
+                method = method_dict.method
                 assert hasattr(method.module, method.name)
                 pruned_tensor = getattr(method.module, method.name)
                 nonzero = pruned_tensor.count_nonzero()
                 params = pruned_tensor.numel()
                 self.writer.add_scalar(
-                    'sparsity_per_layer/' + method_dict['name'], 1 - nonzero / params, self.global_step)
+                    'sparsity_per_layer/' + method_dict.name, 1 - nonzero / params, self.global_step)
                 total_nonzero += nonzero
                 total_params += params
             if total_params != 0:
@@ -96,8 +104,8 @@ class PruningScheduler(abc.ABC):
         parsed_model = parse_model_for_pruning(self.model, self.config)
         for name, module in self.model.named_modules():
             if name in parsed_model:
-                method_dict = {'name': name, 'kwargs': parsed_model[name]}
-                method_dict['method'] = self.pruning_fn(
+                method_dict = MethodDict(name=name, kwargs=parsed_model[name])
+                method_dict.method = self.pruning_fn(
                     module, **parsed_model[name])
                 self.method_dicts.append(method_dict)
 

@@ -5,6 +5,8 @@
 """
 Utilities for pruning methods
 """
+from collections import Iterable
+
 import torch
 
 
@@ -19,6 +21,17 @@ class MaskFilledSTE(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         """Straight-Through Estimator (STE) according to"""
+        return grad_output, None
+
+
+class STE(torch.autograd.Function):
+    """Straigh-Through Estimator, pass gradients from mask to tensor"""
+    @staticmethod
+    def forward(ctx, input, mask):
+        return mask
+
+    @staticmethod
+    def backward(ctx, grad_output):
         return grad_output, None
 
 
@@ -39,3 +52,23 @@ def calc_pruning_threshold(tensor, target_sparsity, current_threshold=0., thresh
     threshold = current_threshold * threshold_decay + \
         (1 - threshold_decay) * threshold
     return threshold
+
+
+def handle_block_pruning_dims(block_dims, original_dims):
+    if not isinstance(block_dims, Iterable):
+        block_dims = original_dims * (block_dims, )
+    block_dims = tuple(block_dims)
+    if original_dims < len(block_dims):
+        raise ValueError("Block number of dimensions {} can't be higher than the number of the weight's dimension {}".format(
+            len(block_dims), original_dims))
+    if len(block_dims) < original_dims:
+        # Extend block dimensions with ones to match the number of dimensions of the pruned tensor
+        block_dims = (
+            original_dims - len(block_dims)) * (1, ) + block_dims
+    # # pytorch transposes the input and output channels
+    block_dims = (
+        block_dims[1], block_dims[0]) + block_dims[2:]
+    return block_dims
+
+def calc_current_sparsity_from_sparsity_schedule(sparsity_schedule, initial_sparsity, target_sparsity):
+    return initial_sparsity + (target_sparsity - initial_sparsity) * sparsity_schedule

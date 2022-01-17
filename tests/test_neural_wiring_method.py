@@ -82,6 +82,7 @@ class TestDNWPruningMethod(unittest.TestCase):
         remove_pruning(linear)
         self.assertTrue((tensor == linear.weight).all())
 
+    # TODO fix test
     def test_pruning_gradients(self):
         sparsity = .7
         linear = unstructured_neural_wiring_pruning(

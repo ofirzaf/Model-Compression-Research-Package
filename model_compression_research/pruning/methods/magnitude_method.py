@@ -6,16 +6,23 @@
 Unstructured magnitude based pruning method
 """
 from collections import defaultdict
-from collections.abc import Iterable
 import weakref
 from itertools import chain
+import logging
 
 import torch
 from torch.nn import functional as F
 
 from .method import PruningMethod
-from .methods_utils import calc_pruning_threshold
+from .methods_utils import (
+    calc_pruning_threshold,
+    handle_block_pruning_dims,
+    calc_current_sparsity_from_sparsity_schedule,
+)
 from ..registry import register_method
+
+
+logger = logging.getLogger(__name__)
 
 
 BLOCK_POOLING_FN_LUT = {'max': F.max_pool2d,
@@ -63,8 +70,8 @@ class UnstructuredMagnitudePruningMethod(PruningMethod):
     def _update_mask(self, sparsity_schedule=None):
         """Updates mask of pruned layer according to new target sparsity if one is provided"""
         if sparsity_schedule is not None:
-            self._current_sparsity = self.initial_sparsity + \
-                (self.target_sparsity - self.initial_sparsity) * sparsity_schedule
+            self._current_sparsity = calc_current_sparsity_from_sparsity_schedule(
+                sparsity_schedule, self.initial_sparsity, self.target_sparsity)
 
     def extra_repr(self):
         s = super().extra_repr()
@@ -109,24 +116,15 @@ class BlockStructuredMagnitudePruningMethod(UnstructuredMagnitudePruningMethod):
         self.pooling_type = pooling_type
         super()._init(target_sparsity, initial_sparsity, threshold_decay)
         # Handle block dims
-        original_dims = len(
-            getattr(self.module, self.get_name('original')).size())
-        if original_dims > 2:
+        original = getattr(self.module, self.get_name('original'))
+        if original.dim() > 2:
             raise NotImplementedError(
-                "Currently works only for 2D weights, {}D weight was given".format(original_dims))
-        if not isinstance(self.block_dims, Iterable):
-            self.block_dims = original_dims * (self.block_dims, )
-        self.block_dims = tuple(self.block_dims)
-        if original_dims < len(self.block_dims):
-            raise ValueError("Block number of dimensions {} can't be higher than the number of the weight's dimension {}".format(
-                len(self.block_dims), original_dims))
-        if len(self.block_dims) < original_dims:
-            # Extend block dimensions with ones to match the number of dimensions of the pruned tensor
-            self.block_dims = (
-                original_dims - len(self.block_dims)) * (1, ) + self.block_dims
-        # # pytorch transposes the input and output channels
-        self.block_dims = (
-            self.block_dims[1], self.block_dims[0]) + self.block_dims[2:]
+                "Currently works only for 2D weights, {}D weight was given".format(original.dim()))
+        self.block_dims = handle_block_pruning_dims(block_dims, original.dim())
+        self.expanded_shape = tuple(chain.from_iterable(
+            [[d // b, b] for d, b in zip(original.shape, self.block_dims)]))
+        self.pooled_shape = tuple(chain.from_iterable(
+            [[d // b, 1] for d, b in zip(original.shape, self.block_dims)]))
         # Handle pooling function
         if isinstance(self.pooling_type, str):
             self.pooling_type = BLOCK_POOLING_FN_LUT[self.pooling_type]
@@ -140,16 +138,12 @@ class BlockStructuredMagnitudePruningMethod(UnstructuredMagnitudePruningMethod):
         # calculate new threshold
         original = self.get_parameters('original').abs()
         # pooling weight
-        extanded_shape = tuple(chain.from_iterable(
-            [[d // b, b] for d, b in zip(original.shape, self.block_dims)]))
-        pooled_shape = tuple(chain.from_iterable(
-            [[d // b, 1] for d, b in zip(original.shape, self.block_dims)]))
         pooled_weight = self.pooling_type(
             original.unsqueeze(0), self.block_dims, self.block_dims).squeeze()
         self._update_threshold(pooled_weight)
         # compute mask according new threshold and expand
-        new_mask = (pooled_weight > self._threshold).to(original.dtype).reshape(pooled_shape).expand(
-            extanded_shape).reshape_as(original)
+        new_mask = (pooled_weight > self._threshold).to(original.dtype).reshape(self.pooled_shape).expand(
+            self.expanded_shape).reshape_as(original)
         self.set_parameter('mask', new_mask)
 
     def extra_repr(self):
@@ -164,7 +158,7 @@ class UnstructuredSparsityGroup:
 
     def __init__(self):
         self.target_sparsity = 0.
-        self.initial_sparsity = 0
+        self.initial_sparsity = 0.
         self._current_sparsity = self.initial_sparsity
         self.threshold_decay = 0.
         self.threshold = 0.
@@ -195,44 +189,60 @@ class UnstructuredSparsityGroup:
         """Update group sparsity"""
         if sparsity_schedule is not None:
             old_current = self._current_sparsity
-            self._current_sparsity = self.initial_sparsity + \
-                (self.target_sparsity - self.initial_sparsity) * sparsity_schedule
+            self._current_sparsity = calc_current_sparsity_from_sparsity_schedule(
+                sparsity_schedule, self.initial_sparsity, self.target_sparsity)
             if old_current != self._current_sparsity:
                 self.force_threshold_compute = True
 
-    def _compute_cdf(self, maximum):
+    def _compute_cdf(self, minimum, maximum):
         """Compute the cdf of the pruned tensors in the group"""
         device = maximum.device
         hist = torch.zeros(self.bins, device=device)
         for m in self.method_dict:
             if m() is not None:
-                hist += torch.histc(getattr(m().module, m().get_name('original')).abs().flatten(),
-                                    bins=self.bins, max=maximum.item())
+                hist += torch.histc(m().get_scorer().flatten(),
+                                    bins=self.bins, min=minimum.item(), max=maximum.item())
         return hist.cumsum(0)
 
-    def _comptue_maximum_magnitude(self):
+    def _comptue_min_max_magnitude(self):
         """Compute the maximum magnitude weight in the group"""
-        max_mag = torch.stack([getattr(m().module, m().get_name('original')).abs().max()
-                               for m in self.method_dict if m() is not None]).max()
-        return max_mag
+        max_mag = torch.stack([m().get_scorer().max()
+                              for m in self.method_dict if m() is not None]).max()
+        min_mag = torch.stack([m().get_scorer().min()
+                              for m in self.method_dict if m() is not None]).min()
+        return min_mag, max_mag
 
     def compute_new_threshold(self):
         """Compute the pruning threshold of the group"""
         # get the maximum magnitude of the group
+        min_mag, max_mag = self._comptue_min_max_magnitude()
+        diff = max_mag - min_mag
         if self._current_sparsity == 0.:
-            self.threshold = 0.
+            self.threshold = torch.tensor(min_mag.item() - 1)
         else:
-            max_mag = self._comptue_maximum_magnitude()
-            cdf = self._compute_cdf(max_mag)
-            n = cdf[-1]
-            thresh_bin = torch.sum(cdf / cdf[-1] <= 1.0 - self.epsilon)
-            if thresh_bin < self.bins / 2:
-                max_mag = thresh_bin.float() / self.bins * max_mag
-                cdf = self._compute_cdf(max_mag)
-                cdf[-1] = n
-            normed_cdf = cdf / n
+            cdf = self._compute_cdf(min_mag, max_mag)
+            # Resolution check, remove distant outliers
+            recalculate = False
+            upper_thresh_bin = torch.sum(cdf / cdf[-1] <= 1.0 - self.epsilon)
+            lower_thresh_bin = self.bins - \
+                torch.sum(cdf / cdf[-1] >= self.epsilon)
+            if upper_thresh_bin < self.bins * 0.75:
+                recalculate = True
+                max_mag = upper_thresh_bin.float() * diff / self.bins + min_mag
+            if lower_thresh_bin > self.bins * 0.25:
+                recalculate = True
+                min_mag = lower_thresh_bin.float() * diff / self.bins + min_mag
+            if recalculate:
+                old_cdf = cdf
+                cdf = self._compute_cdf(min_mag, max_mag)
+                cdf += old_cdf[lower_thresh_bin - 1]
+                cdf[-1] += old_cdf[-1] - old_cdf[upper_thresh_bin - 1]
+                if cdf[-1] != old_cdf[-1]:
+                    logger.warning("Total number in CDFs don't match, diff={}".format(
+                        old_cdf[-1] - cdf[-1]))
+            normed_cdf = cdf / cdf[-1]
             new_threshold = torch.sum(
-                normed_cdf < self._current_sparsity) * max_mag / self.bins
+                normed_cdf < self._current_sparsity).add(1) * (max_mag - min_mag) / self.bins + min_mag
             self.threshold = self.threshold * self.threshold_decay + \
                 (1 - self.threshold_decay) * new_threshold
         return self.threshold
@@ -309,6 +319,9 @@ class GroupedUnstructuredMagnitudePruningMethod(PruningMethod):
     def _update_mask(self, sparsity_schedule=None):
         if sparsity_schedule is not None:
             self.group.update_sparsity(sparsity_schedule)
+
+    def get_scorer(self):
+        return self.get_parameters('original').abs()
 
     @classmethod
     def get_group(cls, group_name):

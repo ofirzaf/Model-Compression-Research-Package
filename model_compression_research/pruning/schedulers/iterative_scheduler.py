@@ -82,7 +82,7 @@ class IterativePruningScheduler(PruningScheduler):
         """Applies pruning method to the model and all its sublayers"""
         sparsity_schedule = self.get_sparsity_schedule()
         for method_dict in self.method_dicts:
-            method_dict['method'].update_mask(sparsity_schedule)
+            method_dict.method.update_mask(sparsity_schedule)
 
     def extra_repr(self):
         s = 'global_step={}, current_sparsity={:.3f}, '.format(
