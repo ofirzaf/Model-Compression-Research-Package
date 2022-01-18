@@ -183,6 +183,38 @@ try:
                     self.scheduler.print_pruning_methods(flush=True)
                 self.scheduler.writer = SummaryWriter(args.logging_dir)
 
+        def on_train_begin(self, args, state, control, **kwargs):
+            # TODO temporary hack for scores learning rate in movement pruning
+            if self.config is not None and 'movement' in self.config.pruning_fn:
+                print("*** Working Movement ***", flush=True)
+                optimizer = kwargs.pop('optimizer')
+                if optimizer is None:
+                    raise RuntimeError("No optimizer.")
+                scores_lr = 1e-2
+                scores = self.scheduler.method_dicts[0].method.get_parameters('scores')
+                for param_group in optimizer.param_groups:
+                    if hash(scores) in map(hash, param_group['params']):
+                        break
+                assert hash(scores) in map(hash, param_group['params'])
+                scores_parameters = []
+                for method_dict in self.scheduler.method_dicts:
+                    scores = method_dict.method.get_parameters('scores')
+                    loc = [i for i, h in enumerate(map(hash, param_group['params'])) if h == hash(scores)]
+                    assert len(loc) == 1
+                    param_group['params'].pop(loc[0])
+                    scores_parameters.append(scores)
+                new_group = {}
+                new_group['params'] = scores_parameters
+                new_group['lr'] = scores_lr
+                new_group['initial_lr'] = scores_lr
+                new_group['weight_decay'] = param_group['weight_decay']
+                optimizer.add_param_group(new_group)
+                # optimizer.param_groups[-1]['initial_lr'] = scores_lr
+                print(optimizer, flush=True)
+                scheduler = kwargs.pop('lr_scheduler')
+                scheduler.base_lrs.append(scores_lr)
+                scheduler.lr_lambdas.append(scheduler.lr_lambdas[0])
+
         def on_step_end(self, args, state, control, **kwargs):
             if self.args.do_prune:
                 self.scheduler.step()
@@ -190,6 +222,14 @@ try:
         def on_log(self, args, state, control, **kwargs):
             if self.args.do_prune:
                 self.scheduler.tb_log()
+                # TODO temporary hack to log learning rates while doing movement pruning
+                optimizer = kwargs.pop('optimizer')
+                lr_sched = kwargs.pop('lr_scheduler')
+                lrs = lr_sched.get_last_lr()
+                if optimizer is None:
+                    raise RuntimeError("no optimizer in log callback")
+                for i, lr in enumerate(lrs):
+                    self.scheduler.writer.add_scalar(f'lrs/lr_{i}', lr, self.scheduler.global_step)
 
         def on_train_end(self, args, state, control, model=None, **kwargs):
             if self.args.do_prune:
