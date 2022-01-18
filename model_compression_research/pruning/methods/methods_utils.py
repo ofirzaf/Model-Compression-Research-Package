@@ -45,10 +45,16 @@ def calc_pruning_threshold(tensor, target_sparsity, current_threshold=0., thresh
     else:
         reshaped_tensor = tensor.view(-1, block_size)
     k = int(target_sparsity * reshaped_tensor.shape[-1])
-    try:
-        threshold = reshaped_tensor.kthvalue(k, dim=-1)[0]
-    except RuntimeError:
-        threshold = torch.tensor([0.], device=reshaped_tensor.device)
+    assert k >= 0
+    threshold = tensor.min() - 1
+    # if k is 0 than we will get 100% sparsity in case of sort
+    # or RuntimeError in case of kthvalue
+    if k > 0:
+        # On gpu sort is substantialy faster than kthvalue
+        if reshaped_tensor.is_cuda:
+            threshold = reshaped_tensor.sort().values.t()[k - 1]
+        else:
+            threshold = reshaped_tensor.kthvalue(k, dim=-1).values
     threshold = current_threshold * threshold_decay + \
         (1 - threshold_decay) * threshold
     return threshold
