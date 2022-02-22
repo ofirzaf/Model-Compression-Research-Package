@@ -5,6 +5,7 @@
 """
 API utilities for using model compression package
 """
+import functools
 import json
 import logging
 from functools import wraps
@@ -316,6 +317,28 @@ try:
             # Delete _input to conserve memory after distillation loss calculation is over
             del self._input
             return loss
+
+    class HFDistillationModelWrapper(distiller.DistillationModelWrapper):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.output_hidden_states = False
+            self.output_attentions = False
+            for t in self.teachers:
+                if t.hidden_alpha is not None:
+                    self.output_hidden_states = True
+                if t.attention_alpha is not None:
+                    self.output_attentions = True
+            self.forward = functools.update_wrapper(self.forward.__func__, self.student.forward.__func__).__get__(self)
+
+        def forward(self, *args, **kwargs):
+            kwargs.update(
+                output_hidden_states=self.output_hidden_states,
+                output_attentions=self.output_attentions,
+            )
+            student_output = super().forward(*args, **kwargs)
+            combined_loss = self.compute_loss(student_output["loss"], student_output)
+            student_output["loss"] = combined_loss
+            return student_output
 
     def hf_add_teacher_to_student(
         student,
