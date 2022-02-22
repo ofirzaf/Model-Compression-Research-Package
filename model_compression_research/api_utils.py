@@ -10,6 +10,7 @@ import json
 import logging
 from functools import wraps
 from argparse import Action
+import warnings
 
 import torch
 from torch import nn
@@ -319,6 +320,9 @@ try:
             return loss
 
     class HFDistillationModelWrapper(distiller.DistillationModelWrapper):
+
+        default_teacher_wrapper = HFTeacherWrapper
+
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self.output_hidden_states = False
@@ -328,7 +332,8 @@ try:
                     self.output_hidden_states = True
                 if t.attention_alpha is not None:
                     self.output_attentions = True
-            self.forward = functools.update_wrapper(self.forward.__func__, self.student.forward.__func__).__get__(self)
+            self.forward = functools.update_wrapper(
+                self.forward.__func__, self.student.forward.__func__).__get__(self)
 
         def forward(self, *args, **kwargs):
             kwargs.update(
@@ -336,7 +341,8 @@ try:
                 output_attentions=self.output_attentions,
             )
             student_output = super().forward(*args, **kwargs)
-            combined_loss = self.compute_loss(student_output["loss"], student_output)
+            combined_loss = self.compute_loss(
+                student_output["loss"], student_output)
             student_output["loss"] = combined_loss
             return student_output
 
@@ -355,6 +361,10 @@ try:
         teacher_convert_parameters=True,
     ):
         """Add model distillation from teacher to HuggingFace/transformers model"""
+        warnings.warn(
+            "`model_compression_research.hf_add_teacher_to_student` is deprecated and will be removed in an upcoming release. "
+            "Please use newer API `model_compression_research.HFDistillationModelWrapper`"
+        )
         teacher = HFTeacherWrapper(
             teacher,
             ce_alpha=teacher_ce_alpha,
@@ -390,6 +400,10 @@ try:
 
     def hf_remove_teacher_from_student(student):
         """Remove model distillation and teacher from HuggingFace/transformers model"""
+        warnings.warn(
+            "`model_compression_research.hf_remove_teacher_from_student` is deprecated and will be removed in an upcoming release. "
+            "Please use newer API `model_compression_research.HFDistillationModelWrapper`"
+        )
         student.forward = student._forward
         del student._teacher
         del student._forward
@@ -405,6 +419,10 @@ except ModuleNotFoundError:
             raise_hf_import_error(self.__class__.__name__)
 
     class HFTeacherWrapper:
+        def __init__(self, *args, **kwargs):
+            raise_hf_import_error(self.__class__.__name__)
+
+    class HFDistillationModelWrapper:
         def __init__(self, *args, **kwargs):
             raise_hf_import_error(self.__class__.__name__)
 

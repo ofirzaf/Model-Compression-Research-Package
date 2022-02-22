@@ -76,15 +76,24 @@ class DistillationModelWrapper(nn.Module):
     outputs the knowledge distillation loss in the forward pass
     """
 
-    def __init__(self, student, teachers, *, alpha_student=1., **_):
+    default_teacher_wrapper = TeacherWrapper
+
+    def __init__(self, student, teachers, *, alpha_student=1., **default_teacher_kwargs):
         super().__init__()
         self.student = student
         teachers = teachers if isinstance(teachers, list) else [teachers]
+        default_teacher_kwargs = default_teacher_kwargs if default_teacher_kwargs is not None else {}
+        wrapped_teachers = []
         for teacher in teachers:
-            if not isinstance(teacher, TeacherWrapper):
-                raise RuntimeError(
-                    "Recieved a teacher not wrapped with TeacherWrapper class")
-        self.teachers = nn.ModuleList(teachers)
+            kwargs = {}
+            kwargs.update(default_teacher_kwargs)
+            if isinstance(teacher, dict):
+                t = teacher.pop('teacher')
+                kwargs.update(teacher)
+                teacher = t
+            wrapped_teachers.append(
+                self.default_teacher_wrapper(teacher, **kwargs))
+        self.teachers = nn.ModuleList(wrapped_teachers)
         self.alpha_student = alpha_student
 
     def forward(self, *args, **kwargs):
