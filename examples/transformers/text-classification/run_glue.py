@@ -66,9 +66,8 @@ from model_compression_research import (
     HFTrainerPruningCallback,
     add_quantization_arguments_to_parser,
     quantization_model_or_class_factory,
-    hf_add_teacher_to_student,
-    hf_remove_teacher_from_student,
     get_linear_rewinding_schedule_with_warmup,
+    HFDistillationModelWrapper,
 )
 
 
@@ -535,17 +534,21 @@ def main():
             if distill_args.cross_model_distillation == 'tinybert':
                 attention_alpha = defaultdict(lambda: 1.)
                 hidden_alpha = defaultdict(lambda: 1.)
-        model = hf_add_teacher_to_student(
+        teacher_dict = {
+            'teacher': teacher,
+            'hidden_alpha': hidden_alpha,
+            'attention_alpha': attention_alpha,
+            'similarity_loss': similarity_loss,
+            'ce_temperature': distill_args.temperature,
+            'ce_alpha': distill_args.knowledge_distillation_alpha,
+            'logit_names': ['logits'],
+            'ce_weight': [1.0],
+        }
+        logger.info("*** Wrapping model with KD wrapper ***")
+        model = HFDistillationModelWrapper(
             model,
-            teacher,
+            teacher_dict,
             student_alpha=distill_args.cross_entropy_alpha,
-            teacher_ce_alpha=distill_args.knowledge_distillation_alpha,
-            teacher_hidden_alpha=hidden_alpha,
-            teacher_attention_alpha=attention_alpha,
-            teacher_similarity_loss=similarity_loss,
-            teacher_ce_temperature=distill_args.temperature,
-            teacher_logit_names=["logits"],
-            teacher_ce_weights=[1.0]
         )
 
     # Rewinding
@@ -588,8 +591,6 @@ def main():
         )
         metrics["train_samples"] = min(max_train_samples, len(train_dataset))
 
-        if distill_args.distill:
-            hf_remove_teacher_from_student(trainer.model)
         trainer.save_model()  # Saves the tokenizer too for easy upload
 
         trainer.log_metrics("train", metrics)

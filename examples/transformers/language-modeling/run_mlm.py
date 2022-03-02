@@ -69,9 +69,8 @@ from transformers.optimization import get_scheduler
 from model_compression_research import (
     add_pruning_arguments_to_parser,
     HFTrainerPruningCallback,
-    hf_add_teacher_to_student,
-    hf_remove_teacher_from_student,
     get_linear_rewinding_schedule_with_warmup,
+    HFDistillationModelWrapper,
 )
 
 import dataset_processing as preprocess
@@ -460,18 +459,21 @@ def main():
             if distill_args.cross_model_distillation == 'tinybert':
                 attention_alpha = defaultdict(lambda: 1.)
                 hidden_alpha = defaultdict(lambda: 1.)
-        logger.info("*** Applying teacher to student ***")
-        model = hf_add_teacher_to_student(
+        teacher_dict = {
+            'teacher': teacher,
+            'hidden_alpha': hidden_alpha,
+            'attention_alpha': attention_alpha,
+            'similarity_loss': similarity_loss,
+            'ce_temperature': distill_args.temperature,
+            'ce_alpha': distill_args.knowledge_distillation_alpha,
+            'logit_names': logit_names,
+            'ce_weight': weight,
+        }
+        logger.info("*** Wrapping model with KD wrapper ***")
+        model = HFDistillationModelWrapper(
             model,
-            teacher,
+            teacher_dict,
             student_alpha=distill_args.cross_entropy_alpha,
-            teacher_ce_alpha=distill_args.knowledge_distillation_alpha,
-            teacher_hidden_alpha=hidden_alpha,
-            teacher_attention_alpha=attention_alpha,
-            teacher_similarity_loss=similarity_loss,
-            teacher_ce_temperature=distill_args.temperature,
-            teacher_logit_names=logit_names,
-            teacher_ce_weights=weight,
         )
 
     # Rewinding
@@ -509,8 +511,6 @@ def main():
         elif last_checkpoint is not None:
             checkpoint = last_checkpoint
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
-        if distill_args.distill:
-            hf_remove_teacher_from_student(trainer.model)
         trainer.save_model()  # Saves the tokenizer too for easy upload
         metrics = train_result.metrics
 

@@ -63,7 +63,7 @@ for e in range(training_args.epochs):
 pruning_scheduler.remove_pruning()
 ```
 
-For using knowledge distillation with [`HuggingFace/transformers`](https://github.com/huggingface/transformers) dedicated transformers [`Trainer`](https://huggingface.co/transformers/main_classes/trainer.html) see the implementation of `HFTrainerPruningCallback` in [`api_utils.py`](model_compression_research/api_utils.py).
+For using weight pruning with [`HuggingFace/transformers`](https://github.com/huggingface/transformers) dedicated transformers [`Trainer`](https://huggingface.co/transformers/main_classes/trainer.html) see the implementation of `HFTrainerPruningCallback` in [`api_utils.py`](model_compression_research/api_utils.py) and usage examples in [examples/transformers](examples/transformers/).
 
 ### Knowledge Distillation
 Model distillation is a method to distill the knowledge learned by a teacher to a smaller student model.
@@ -80,10 +80,10 @@ student = get_student_model()
 dataloader = get_dataloader()
 criterion = get_criterion()
 
-# Wrap teacher model with TeacherWrapper and set loss scaling factor and temperature
-teacher = TeacherWrapper(teacher, ce_alpha=0.5, ce_temperature=2.0)
+# Create a teacher dictionary with all the teacher's arguments
+teacher_dict = {'teacher': teacher, 'ce_alpha': 0.5, 'ce_temperature': 2.0}
 # Initialize the distillation model with the student and teacher
-distillation_model = DistillationModelWrapper(student, teacher, alpha_student=0.5)
+distillation_model = DistillationModelWrapper(student, teacher_dict, alpha_student=0.5)
 
 optimizer = get_optimizer()
 
@@ -102,7 +102,7 @@ for e in range(training_args.epochs):
         optimizer.zero_grad()
 ```
 
-For using knowledge distillation with [`HuggingFace/transformers`](https://github.com/huggingface/transformers) see the implementation of `HFTeacherWrapper` and `hf_add_teacher_to_student` in [`api_utils.py`](model_compression_research/api_utils.py).
+For using knowledge distillation with [`HuggingFace/transformers`](https://github.com/huggingface/transformers) see the implementation of `HFDistillationModelWrapper` in [`api_utils.py`](model_compression_research/api_utils.py) and usage examples in [examples/transformers](examples/transformers/).
 
 ### Quantization-Aware Training
 Quantization-Aware Training is a method for training models that will be later quantized at the inference stage, as opposed to other post-training quantization methods where models are trained without any adaptation to the error caused by model quantization.
