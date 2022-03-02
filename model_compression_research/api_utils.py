@@ -333,7 +333,7 @@ try:
                 if t.attention_alpha is not None:
                     self.output_attentions = True
             self.forward = functools.update_wrapper(
-                self.forward.__func__, self.student.forward.__func__).__get__(self)
+                self.forward.__func__, self.module.forward.__func__).__get__(self)
 
         def forward(self, *args, **kwargs):
             kwargs.update(

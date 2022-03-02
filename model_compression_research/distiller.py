@@ -80,7 +80,7 @@ class DistillationModelWrapper(nn.Module):
 
     def __init__(self, student, teachers, *, alpha_student=1., **default_teacher_kwargs):
         super().__init__()
-        self.student = student
+        self.module = student
         teachers = teachers if isinstance(teachers, list) else [teachers]
         default_teacher_kwargs = default_teacher_kwargs if default_teacher_kwargs is not None else {}
         wrapped_teachers = []
@@ -100,7 +100,7 @@ class DistillationModelWrapper(nn.Module):
         if self.training:
             for teacher in self.teachers:
                 teacher(*args, **kwargs)
-        return self.student(*args, **kwargs)
+        return self.module(*args, **kwargs)
 
     def compute_loss(self, student_loss, student_outputs):
         """Compute combined loss of student with teachers"""
