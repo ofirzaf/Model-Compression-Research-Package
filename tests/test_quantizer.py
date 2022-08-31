@@ -10,7 +10,7 @@ import unittest
 import torch
 from torch import nn
 
-from model_compression_research.quantization import Quantizer, QuantizerConfig, QuantizedLinear
+from model_compression_research.quantization import Quantizer, QuantizerConfig, QATLinear
 
 
 class TestQuantizer(unittest.TestCase):
@@ -44,8 +44,8 @@ class TestQuantizer(unittest.TestCase):
 
     def test_simple_case(self):
         Quantizer(self.model, self.config).quantize()
-        self.assertTrue(type(self.model.fc1) == QuantizedLinear)
-        self.assertTrue(type(self.model.fc2) == QuantizedLinear)
+        self.assertTrue(type(self.model.fc1) == QATLinear)
+        self.assertTrue(type(self.model.fc2) == QATLinear)
 
     def test_quantization_begin(self):
         self.config.quantization_begin = 2
@@ -57,7 +57,7 @@ class TestQuantizer(unittest.TestCase):
         self.config.not_to_quantize = ['fc1']
         Quantizer(self.model, self.config).quantize()
         self.assertTrue(type(self.model.fc1) == nn.Linear)
-        self.assertTrue(type(self.model.fc2) == QuantizedLinear)
+        self.assertTrue(type(self.model.fc2) == QATLinear)
 
     def test_not_to_requant(self):
         self.config.not_to_requantize_output = ['fc1']
