@@ -226,12 +226,12 @@ class QATMatmul(Matmul):
     def disable_observer(self):
         return self.enable_observer(False)
 
-QUANT_MAPPING = {
+QAT_MAPPING = {
     nn.Linear: QATLinear,
     Matmul: QATMatmul,
 }
 
-UNQUANT_MAPPING = {
+UNQAT_MAPPING = {
     QATLinear: nn.Linear,
     QATMatmul: Matmul,
 }

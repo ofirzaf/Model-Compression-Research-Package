@@ -4,3 +4,4 @@
 
 from .qat import *
 from .quantizer import Quantizer, QuantizerConfig
+from . import hf_qat

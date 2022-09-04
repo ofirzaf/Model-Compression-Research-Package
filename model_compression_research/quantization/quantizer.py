@@ -7,6 +7,7 @@ Quantizer, apply quantization modules to supported pytorch models
 """
 from ..utils import Config
 from . import qat
+from . import hf_qat
 
 
 def get_unique_devices(module):
@@ -30,26 +31,24 @@ class Quantizer:
         self.config = config
 
     def _quantize(self, module, path=''):
-        swap_dict = {}
         for name, mod in module.named_children():
             full_name = '.'.join((path, name)).strip('.')
-            if type(mod) not in qat.QUANT_MAPPING:
-                self._quantize(mod, full_name)
-            else:
+            # convert huggingface models to quantization friendly models
+            hf_qat.hf_convert(mod)
+            if type(mod) in qat.QAT_MAPPING:
                 if not any([s in full_name for s in self.config.not_to_quantize]):
                     if any([s in full_name for s in self.config.not_to_requantize_output]):
-                        new = qat.QUANT_MAPPING[type(mod)].from_float(
+                        new = qat.QAT_MAPPING[type(mod)].from_float(
                             mod, start_step=self.config.quantization_begin, output_fake_quant=None)
                     else:
-                        new = qat.QUANT_MAPPING[type(mod)].from_float(
+                        new = qat.QAT_MAPPING[type(mod)].from_float(
                             mod, start_step=self.config.quantization_begin)
                     devices = get_unique_devices(mod)
                     assert len(
                         devices) <= 1, ("swap_module only works with cpu or single-device CUDA modules, but got devices {}".format(devices))
-                    swap_dict[name] = new.to(
+                    module._modules[name] = new.to(
                         next(iter(devices)) if len(devices) > 0 else None)
-        for key, value in swap_dict.items():
-            module._modules[key] = value
+            self._quantize(mod, full_name)
 
     def quantize(self):
         self._quantize(self.model)
