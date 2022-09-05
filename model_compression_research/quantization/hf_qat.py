@@ -208,7 +208,11 @@ try:
 
     QAT_MAPPING = {
         BertSelfAttention: QATPair(
-            init=bert_self_attention_init, forward=bert_self_attention_forward)
+            init=bert_self_attention_init, forward=bert_self_attention_forward
+        ),
+        MultiHeadSelfAttention: QATPair(
+            init=multi_head_self_attention_init, forward=multi_head_self_attention_forward
+        ),
     }
 
     def hf_convert(module):
