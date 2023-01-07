@@ -61,6 +61,7 @@ from transformers.trainer_utils import get_last_checkpoint, is_main_process
 from transformers.utils import check_min_version
 from utils_qa import postprocess_qa_predictions
 
+import model_compression_research as mcr
 from model_compression_research import (
     add_pruning_arguments_to_parser,
     HFTrainerPruningCallback,
@@ -106,6 +107,18 @@ class ModelArguments:
             "help": "Will use the token generated when running `transformers-cli login` (necessary to use this script "
             "with private models)."
         },
+    )
+    peft: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Use parameter efficient fine-tuning method, options=[bitfit, ia3, lora]"
+        }
+    )
+    peft_config: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Path to parameter efficient fine-tuning config"
+        }
     )
 
 
@@ -386,6 +399,14 @@ def main():
             "at https://huggingface.co/transformers/index.html#bigtable to find the model types that meet this "
             "requirement"
         )
+
+    # PEFT
+    if model_args.peft == 'bitfit':
+        mcr.bitfit_apply(model)
+    elif model_args.peft == 'ia3':
+        mcr.IA3AddOn.apply_to_model(model, mcr.IA3ModelConfig.from_json_file(model_args.peft_config))
+    elif model_args.peft == 'lora':
+        mcr.LoraAddOn.apply_to_model(model, mcr.LoraModelConfig.from_json_file(model_args.peft_config))
 
     # Preprocessing the datasets.
     # Preprocessing is slighlty different for training and evaluation.

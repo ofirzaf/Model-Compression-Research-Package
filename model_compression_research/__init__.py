@@ -8,3 +8,4 @@ from .pruning import *
 from .quantization import *
 from .distiller import *
 from .api_utils import *
+from .peft import *
