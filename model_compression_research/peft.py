@@ -297,6 +297,12 @@ class LoraAddOn(_AddOn):
             )
         super().apply_to_model(model, config)
 
+    def extra_repr(self):
+        s = super().extra_repr()
+        if self.rank > 0:
+            s += f"rank={self.rank}, alpha={self.rank * self.scaling}"
+        return s
+
 
 @LoraAddOn.register_addon(nn.Linear)
 class LoraLinearAddOn(LoraAddOn):
