@@ -216,6 +216,7 @@ try:
             self.weight = kwargs.pop('ce_weight', None)
             self.hidden_alpha = kwargs.pop('hidden_alpha', None)
             self.attention_alpha = kwargs.pop('attention_alpha', None)
+            self.ignore_index = kwargs.pop('ignore_index', -100)
             similarity_loss = kwargs.pop('similarity_loss', 'mse')
             super().__init__(*args, **kwargs)
             self.logit_names = logit_names if isinstance(
@@ -258,8 +259,9 @@ try:
 
         def _masked_outputs(self, logit, size):
             """Mask outputs of padding tokens"""
-            mask = self._input["attention_mask"].unsqueeze(-1).bool()
-            return torch.masked_select(logit, mask).view(-1, size)
+            mask = self._input['attention_mask'] & self._input['labels'].ne(
+                self.ignore_index)
+            return torch.masked_select(logit, mask.unsqueeze(-1).bool()).view(-1, size)
 
         def compute_distill_loss_callback(self, student_outputs, teacher_outputs):
             """
