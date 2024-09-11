@@ -146,7 +146,16 @@ def quantization_model_or_class_factory(args, *, model=None, cls=None):
     return model if model is not None else cls
 
 
-# Pruning integration into HF/transformers
+# Library integrations into HF/transformers
+
+def convert_zeros_and_ninf(tensor):
+    """Convert zeros in tensor to negative infinity"""
+    zeros_loc, ninf_loc = tensor.eq(0.), tensor.eq(float('-inf'))
+    tensor[zeros_loc] = float('-inf')
+    tensor[ninf_loc] = 0.
+    return tensor
+
+
 try:
     import os
 
@@ -159,12 +168,12 @@ try:
         except ImportError:
             SummaryWriter = lambda *args, **kwargs: None
 
-    from transformers import TrainerCallback
+    import transformers
     from transformers import logging as hf_logging
 
     logger = hf_logging.get_logger(__name__)
 
-    class HFTrainerPruningCallback(TrainerCallback):
+    class HFTrainerPruningCallback(transformers.TrainerCallback):
         """Callback integrating pruning to transformers.Trainer"""
 
         def __init__(self, pruning_args):
@@ -207,6 +216,20 @@ try:
                 self.scheduler.remove_pruning()
                 with open(os.path.join(args.output_dir, 'pruning_config.json'), 'w') as file:
                     file.write(self.config.to_json_string())
+
+    # TODO fix this class to inherit from distiller.LogitsInDataTeacher
+    class HFLogitsInDataTeacher(nn.Module):
+        """A placeholder teacher model that expects kd_logits in the input data"""
+
+        def __init__(self, model_name_or_path, torch_dtype=torch.float32):
+            super().__init__()
+            self.register_buffer(
+                "dummy", torch.tensor(0.0, dtype=torch_dtype))
+            self.config = transformers.AutoConfig.from_pretrained(
+                model_name_or_path)
+
+        def forward(self, input_ids=None, attention_mask=None, labels=None, kd_logits=None):
+            return transformers.modeling_outputs.CausalLMOutputWithPast(logits=kd_logits)
 
     class HFTeacherWrapper(distiller.TeacherWrapper):
         """Distillation teacher wrapper adjusted to work with HuggingFace/transformers"""
@@ -259,9 +282,14 @@ try:
 
         def _masked_outputs(self, logit, size):
             """Mask outputs of padding tokens"""
-            mask = self._input['attention_mask'] & self._input['labels'].ne(
-                self.ignore_index)
-            return torch.masked_select(logit, mask.unsqueeze(-1).bool()).view(-1, size)
+            mask = (self._input['attention_mask'] & self._input['labels'].ne(
+                self.ignore_index)).unsqueeze(-1).bool()
+            if logit.is_sparse:
+                out = convert_zeros_and_ninf(torch.masked_select(
+                    logit.to_dense(), mask).view(-1, size))
+            else:
+                out = torch.masked_select(logit, mask).view(-1, size)
+            return out
 
         def compute_distill_loss_callback(self, student_outputs, teacher_outputs):
             """
@@ -320,6 +348,7 @@ try:
         *,
         student_alpha=0.5,
         teacher_ce_alpha=0.5,
+        teacher_ce_loss='kl',
         teacher_hidden_alpha=None,
         teacher_attention_alpha=None,
         teacher_ce_temperature=1.,
@@ -339,6 +368,7 @@ try:
         teacher = HFTeacherWrapper(
             teacher,
             ce_alpha=teacher_ce_alpha,
+            ce_loss=teacher_ce_loss,
             hidden_alpha=teacher_hidden_alpha,
             attention_alpha=teacher_attention_alpha,
             ce_temperature=teacher_ce_temperature,
@@ -384,6 +414,69 @@ try:
         del student._forward
         return student
 
+    def hf_collect_logits_from_teacher(
+        model,
+        tokenizer,
+        data,
+        per_device_batch_size=1,
+        sparse_logits=False,
+        top_p=0.9,
+    ):
+        """Collect logits from teacher model for distillation"""
+        topp_warper = transformers.TopPLogitsWarper(top_p=top_p)
+
+        def get_logits(examples, rank):
+            device = f"cuda:{(rank or 0) % torch.cuda.device_count()}"
+            model.to(device)
+            batch = {"input_ids": examples["input_ids"]}
+            batch = tokenizer.pad(batch, return_tensors="pt",
+                                  padding="longest", pad_to_multiple_of=8)
+            batch.pop('labels', None)
+            batch.to(device)
+            with torch.inference_mode():
+                logits = model(**batch, use_cache=False).logits
+            logits = list(logits)
+            for i, ids in enumerate(examples["input_ids"]):
+                logits[i] = logits[i][:len(ids)]
+                if sparse_logits:
+                    # Sparsify logits by using top-p sampling
+                    filtered = topp_warper(torch.tensor(ids), logits[i])
+                    # Swap zeros and -inf to avoid issues with sparse tensor
+                    zeros_loc, ninf_loc = filtered.eq(
+                        0), filtered.eq(float('-inf'))
+                    filtered[zeros_loc] = float('-inf')
+                    filtered[ninf_loc] = 0
+                    sparse = filtered.to_sparse()
+                    logits[i] = (
+                        list(sparse.size()),
+                        sparse.indices(),
+                        sparse.values().half(),
+                    )
+            if sparse_logits:
+                examples["logits_sizes"], examples["logits_indices"], examples["logits_values"] = [
+                    list(e) for e in zip(*logits)]
+            else:
+                examples["logits"] = logits
+            return examples
+        logger.info('Predicting on train dataset')
+        data = data.map(
+            get_logits,
+            batched=True,
+            batch_size=per_device_batch_size,
+            num_proc=torch.cuda.device_count(),
+            with_rank=True,
+            desc='Collecting logits',
+        )
+        return data
+
+    def hf_sparse_logits_to_dense(sizes, indices, values):
+        """Convert sparse logits to dense."""
+        new_logits = torch.sparse_coo_tensor(
+            indices, values, size=sizes).to_dense()
+        zeros_loc, ninf_loc = new_logits.eq(0.), new_logits.eq(float('inf'))
+        new_logits[zeros_loc] = float('-inf')
+        new_logits[ninf_loc] = 0.
+        return new_logits
 except ModuleNotFoundError:
     def raise_hf_import_error(name):
         raise ImportError(
@@ -397,8 +490,15 @@ except ModuleNotFoundError:
         def __init__(self, *args, **kwargs):
             raise_hf_import_error(self.__class__.__name__)
 
+    class HFLogitsInDataTeacher:
+        def __init__(self, *args, **kwargs):
+            raise_hf_import_error(self.__class__.__name__)
+
     def hf_add_teacher_to_student(*args, **kwargs):
         raise_hf_import_error(hf_add_teacher_to_student.__name__)
 
     def hf_remove_teacher_from_student(*args, **kwargs):
         raise_hf_import_error(hf_remove_teacher_from_student.__name__)
+
+    def hf_collect_logits_from_teacher(*args, **kwargs):
+        raise_hf_import_error(hf_collect_logits_from_teacher.__name__)

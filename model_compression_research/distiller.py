@@ -12,15 +12,73 @@ from torch import nn
 from torch.nn import functional as F
 
 
+def kl_loss(student_outputs, teacher_outputs, temperature=1.):
+    """
+    Compute knowledge distillation loss
+    Args:
+        student_outputs: Student model outputs
+        teacher_outputs: Teacher model outputs
+        temperature: Temperature scaling factor
+    Returns:
+        Knowledge distillation loss
+    """
+    return F.kl_div(
+        input=F.log_softmax(student_outputs / temperature, dim=-1),
+        target=F.softmax(teacher_outputs / temperature, dim=-1),
+        reduction="batchmean"
+    ) * (temperature ** 2)
+
+
+def tvd_loss(student_outputs, teacher_outputs, temperature=1.):
+    """
+    Compute Total Variation Distance loss
+    Args:
+        student_outputs: Student model outputs
+        teacher_outputs: Teacher model outputs
+        temperature: Temperature scaling factor
+    Returns:
+        Total Variation Distance loss
+    """
+    return (1 - torch.min(F.softmax(student_outputs / temperature, dim=-1),
+                          F.softmax(teacher_outputs / temperature, dim=-1)).sum(-1)).mean() * temperature
+
+
+LOSS_FUNCTIONS = {
+    'kl': kl_loss,
+    'tvd': tvd_loss
+}
+
+
+class LogitsInDataTeacher(torch.nn.Module):
+    """A placeholder teacher model that expects kd_logits in the input data"""
+
+    def __init__(self, logits_name='kd_logits'):
+        super().__init__()
+        self.logits_name = logits_name
+
+    def forward(self, *args, **kwargs):
+        return kwargs[self.logits_name]
+
+
 class TeacherWrapper(nn.Module):
     """Model distillation teacher wrapper class"""
 
-    def __init__(self, teacher, *, ce_alpha=0., ce_temperature=1., convert_parameters=True, keep_gradients=False):
+    def __init__(
+        self,
+        teacher,
+        *,
+        ce_alpha=0.,
+        ce_temperature=1.,
+        ce_loss='kl',
+        convert_parameters=True,
+        keep_gradients=False,
+    ):
         super().__init__()
         self.teacher = teacher
         self.keep_gradients = keep_gradients
         self.ce_alpha = ce_alpha
         self.ce_temperature = ce_temperature
+        self.ce_loss = ce_loss
         if convert_parameters:
             self.convert_parameters_to_buffers()
         self._output = None
@@ -44,11 +102,7 @@ class TeacherWrapper(nn.Module):
 
     def compute_cross_entropy_loss(self, student_outputs, teacher_outputs):
         """Compute cross entropy loss"""
-        return F.kl_div(
-            input=F.log_softmax(student_outputs / self.ce_temperature, dim=-1),
-            target=F.softmax(teacher_outputs / self.ce_temperature, dim=-1),
-            reduction="batchmean"
-        ) * (self.ce_temperature ** 2)
+        return LOSS_FUNCTIONS[self.ce_loss](student_outputs, teacher_outputs, self.ce_temperature)
 
     def compute_distill_loss_callback(self, student_outputs, teacher_outputs=None):
         """Compute the distillation loss w.r.t teacher"""
