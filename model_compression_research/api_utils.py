@@ -156,6 +156,228 @@ def convert_zeros_and_ninf(tensor):
     return tensor
 
 
+class HFTeacherWrapper(distiller.TeacherWrapper):
+    """Distillation teacher wrapper adjusted to work with HuggingFace/transformers"""
+
+    def __init__(self, *args, **kwargs):
+        logit_names = kwargs.pop('logit_names')
+        self.weight = kwargs.pop('ce_weight', None)
+        self.hidden_alpha = kwargs.pop('hidden_alpha', None)
+        self.attention_alpha = kwargs.pop('attention_alpha', None)
+        self.ignore_index = kwargs.pop('ignore_index', -100)
+        similarity_loss = kwargs.pop('similarity_loss', 'mse')
+        super().__init__(*args, **kwargs)
+        self.logit_names = logit_names if isinstance(
+            logit_names, list) else [logit_names]
+        if self.weight is None:
+            self.weight = torch.ones(
+                len(self.logit_names)) / len(self.logit_names)
+        self._input = None
+        if self.hidden_alpha is not None:
+            def similarity_loss_fn_factory():
+                similarity_loss_fn = lambda *args: getattr(
+                    F, similarity_loss + '_loss')(*args, reduction='mean')
+                if similarity_loss == 'cosine_embedding':
+                    def ret(x, y): return similarity_loss_fn(
+                        x, y, torch.ones(1, device=x.device))
+                else:
+                    ret = similarity_loss_fn
+                return ret
+            self.similarity_loss_fn = similarity_loss_fn_factory()
+
+    def forward(self, **inputs):
+        # Delete _input to maek room for new input in case it wasn't deleted already
+        if hasattr(self, '_input'):
+            del self._input
+        teacher_inputs_ = inputs.copy()
+        # Delete labels from teacher input to get logits instead of computed loss
+        if 'labels' in teacher_inputs_:
+            del teacher_inputs_['labels']
+        assert self.hidden_alpha is None or teacher_inputs_.get(
+            'output_hidden_states', False), "Cross model hidden states distillation loss is used but model doesn't output hidden_states"
+        assert self.attention_alpha is None or teacher_inputs_.get(
+            'output_attentions', False), "Cross model attention states distillation loss is used but model doesn't output attentions"
+        teacher_inputs = {}
+        for k, v in teacher_inputs_.items():
+            if torch.is_tensor(v):
+                v = v.detach().clone()
+            teacher_inputs[k] = v
+        self._input = inputs
+        return super().forward(**teacher_inputs)
+
+    def _masked_outputs(self, logit, size):
+        """Mask outputs of padding tokens"""
+        mask = (self._input['attention_mask'] & self._input['labels'].ne(
+            self.ignore_index)).unsqueeze(-1).bool()
+        if logit.is_sparse:
+            out = convert_zeros_and_ninf(torch.masked_select(
+                logit.to_dense(), mask).view(-1, size))
+        else:
+            out = torch.masked_select(logit, mask).view(-1, size)
+        return out
+
+    def compute_distill_loss_callback(self, student_outputs, teacher_outputs):
+        """
+        Compute distillation loss of student w.r.t teacher outputs.
+        Callback is overrided to support DistilBERT and TinyBERT like distillation
+        """
+        loss = 0
+        if self.ce_alpha != 0:
+            ce_loss = 0
+            for logit_name, weight in zip(self.logit_names, self.weight):
+                student_logit = student_outputs.get(logit_name)
+                teacher_logit = teacher_outputs.get(logit_name)
+                # preprocess LM logits, we consider each token as an example and average the loss over all tokens
+                vocab_size = self.teacher.config.vocab_size
+                if len(teacher_logit.size()) > 2 and teacher_logit.size()[-1] == vocab_size:
+                    teacher_logit = self._masked_outputs(
+                        teacher_logit, vocab_size)
+                    student_logit = self._masked_outputs(
+                        student_logit, vocab_size)
+                    assert teacher_logit.size() == student_logit.size()
+                ce_loss += weight * \
+                    self.compute_cross_entropy_loss(
+                        student_logit, teacher_logit)
+            loss += ce_loss * self.ce_alpha
+        # From distilbert and tinybert. Add loss term with cosine similarity of the embedding output of BERT
+        for key, alpha_dict in zip(['hidden_states', 'attentions'], [self.hidden_alpha, self.attention_alpha]):
+            if alpha_dict is not None:
+                cosine_loss = 0
+                for i in range(len(student_outputs.get(key))):
+                    if alpha_dict[i] != 0:
+                        teacher_state = teacher_outputs.get(key)[i]
+                        student_state = student_outputs.get(key)[i]
+                        assert teacher_state.size() == student_state.size()
+                        hidden_size = teacher_state.size(-1)
+                        if key == 'hidden_states':
+                            teacher_state = self._masked_outputs(
+                                teacher_state, hidden_size)
+                            student_state = self._masked_outputs(
+                                student_state, hidden_size)
+                        unscaled_loss = self.similarity_loss_fn(
+                            student_state, teacher_state)
+                        cosine_loss += alpha_dict[i] * unscaled_loss
+                loss += cosine_loss
+        return loss
+
+    def compute_distill_loss(self, student_outputs, teacher_outputs=None):
+        loss = super().compute_distill_loss(
+            student_outputs, teacher_outputs=teacher_outputs)
+        # Delete _input to conserve memory after distillation loss calculation is over
+        del self._input
+        return loss
+
+
+def hf_add_teacher_to_student(
+    student,
+    teacher,
+    *,
+    student_alpha=0.5,
+    teacher_ce_alpha=0.5,
+    teacher_ce_loss='kl',
+    teacher_hidden_alpha=None,
+    teacher_attention_alpha=None,
+    teacher_ce_temperature=1.,
+    teacher_similarity_loss='mse',
+    teacher_logit_names='logits',
+    teacher_ce_weights=None,
+    teacher_convert_parameters=True,
+):
+    """Add model distillation from teacher to HuggingFace/transformers model"""
+    teacher_sig = inspect.signature(teacher.forward)
+    student_sig = inspect.signature(student.forward)
+    teacher_unique = set(teacher_sig.parameters) - \
+        set(student_sig.parameters)
+    student_unique = set(student_sig.parameters) - \
+        set(teacher_sig.parameters)
+
+    teacher = HFTeacherWrapper(
+        teacher,
+        ce_alpha=teacher_ce_alpha,
+        ce_loss=teacher_ce_loss,
+        hidden_alpha=teacher_hidden_alpha,
+        attention_alpha=teacher_attention_alpha,
+        ce_temperature=teacher_ce_temperature,
+        logit_names=teacher_logit_names,
+        ce_weight=teacher_ce_weights,
+        convert_parameters=teacher_convert_parameters,
+        similarity_loss=teacher_similarity_loss,
+    )
+    student._teacher = teacher
+    student._forward = student.forward
+
+    @wraps(student.forward.__func__)
+    def forward(student, *args, **kwargs):
+        if student.training:
+            if teacher_hidden_alpha is not None:
+                kwargs.update(output_hidden_states=True)
+            if teacher_attention_alpha is not None:
+                kwargs.update(output_attentions=True)
+        student_kwargs = {k: kwargs[k]
+                          for k in kwargs if k not in teacher_unique}
+        student_output = student._forward(*args, **student_kwargs)
+        if student.training:
+            teacher_kwargs = {k: kwargs[k]
+                              for k in kwargs if k not in student_unique}
+            student._teacher(*args, **teacher_kwargs)
+            loss = student_output.loss * student_alpha
+            loss += student._teacher.compute_distill_loss(
+                student_output)
+            student_output.loss = loss
+        return student_output
+
+    new_sig = student_sig.replace(parameters=list(inspect.signature(
+        student.forward.__func__).parameters.values()) + [teacher_sig.parameters[k] for k in teacher_unique])
+    forward.__signature__ = new_sig
+
+    student.forward = forward.__get__(student)
+    return student
+
+
+def hf_remove_teacher_from_student(student):
+    """Remove model distillation and teacher from HuggingFace/transformers model"""
+    student.forward = student._forward
+    del student._teacher
+    del student._forward
+    return student
+
+
+def hf_logits_in_data_collator_call_hook(data_collator_call):
+    """
+    Hook to handle logits in data when using transformers data collators.
+    data_collator_call: The original data_collator call method (`__call__` or `torch_call`)
+    """
+    def collate_call(examples):
+        # Handle dense logits
+        if 'logits' in examples[0].keys():
+            logits = [torch.tensor(e.pop('logits')) for e in examples]
+            batch = data_collator_call(examples)
+            seq_len = batch['input_ids'].size(-1)
+            # Pad first example to seq_len to ensure pad_sequence pads to same length as input_ids
+            logits[0] = torch.nn.functional.pad(
+                logits[0], (0, 0, 0, seq_len - logits[0].size(0)))
+            batch["kd_logits"] = torch.nn.utils.rnn.pad_sequence(
+                logits, batch_first=True, padding_value=float("-inf"))
+        # Handle sparse logits
+        elif 'logits_sizes' in examples[0].keys():
+            logits = []
+            for e in examples:
+                logits.append({
+                    "size": e.pop('logits_sizes'),
+                    "indices": e.pop('logits_indices'),
+                    "values": e.pop('logits_values'),
+                })
+            batch = data_collator_call(examples)
+            t_shape = [batch['input_ids'].size(-1), logits[0]["size"][-1]]
+            logits = torch.stack([torch.sparse_coo_tensor(
+                t["indices"], t["values"], size=t_shape) for t in logits])
+            batch['kd_logits'] = logits
+        else:
+            raise ValueError("Logits not found in examples")
+        return batch
+    return collate_call
+
+
 try:
     import os
 
@@ -229,190 +451,10 @@ try:
                 model_name_or_path)
 
         def forward(self, input_ids=None, attention_mask=None, labels=None, kd_logits=None):
+            if kd_logits is None:
+                raise ValueError(
+                    "Teacher model expects kd_logits in the input data")
             return transformers.modeling_outputs.CausalLMOutputWithPast(logits=kd_logits)
-
-    class HFTeacherWrapper(distiller.TeacherWrapper):
-        """Distillation teacher wrapper adjusted to work with HuggingFace/transformers"""
-
-        def __init__(self, *args, **kwargs):
-            logit_names = kwargs.pop('logit_names')
-            self.weight = kwargs.pop('ce_weight', None)
-            self.hidden_alpha = kwargs.pop('hidden_alpha', None)
-            self.attention_alpha = kwargs.pop('attention_alpha', None)
-            self.ignore_index = kwargs.pop('ignore_index', -100)
-            similarity_loss = kwargs.pop('similarity_loss', 'mse')
-            super().__init__(*args, **kwargs)
-            self.logit_names = logit_names if isinstance(
-                logit_names, list) else [logit_names]
-            if self.weight is None:
-                self.weight = torch.ones(
-                    len(self.logit_names)) / len(self.logit_names)
-            self._input = None
-            if self.hidden_alpha is not None:
-                def similarity_loss_fn_factory():
-                    similarity_loss_fn = lambda *args: getattr(
-                        F, similarity_loss + '_loss')(*args, reduction='mean')
-                    if similarity_loss == 'cosine_embedding':
-                        def ret(x, y): return similarity_loss_fn(
-                            x, y, torch.ones(1, device=x.device))
-                    else:
-                        ret = similarity_loss_fn
-                    return ret
-                self.similarity_loss_fn = similarity_loss_fn_factory()
-
-        def forward(self, **inputs):
-            # Delete _input to maek room for new input in case it wasn't deleted already
-            if hasattr(self, '_input'):
-                del self._input
-            teacher_inputs_ = inputs.copy()
-            # Delete labels from teacher input to get logits instead of computed loss
-            if 'labels' in teacher_inputs_:
-                del teacher_inputs_['labels']
-            assert self.hidden_alpha is None or teacher_inputs_.get(
-                'output_hidden_states', False), "Cross model hidden states distillation loss is used but model doesn't output hidden_states"
-            assert self.attention_alpha is None or teacher_inputs_.get(
-                'output_attentions', False), "Cross model attention states distillation loss is used but model doesn't output attentions"
-            teacher_inputs = {}
-            for k, v in teacher_inputs_.items():
-                if torch.is_tensor(v):
-                    v = v.detach().clone()
-                teacher_inputs[k] = v
-            self._input = inputs
-            return super().forward(**teacher_inputs)
-
-        def _masked_outputs(self, logit, size):
-            """Mask outputs of padding tokens"""
-            mask = (self._input['attention_mask'] & self._input['labels'].ne(
-                self.ignore_index)).unsqueeze(-1).bool()
-            if logit.is_sparse:
-                out = convert_zeros_and_ninf(torch.masked_select(
-                    logit.to_dense(), mask).view(-1, size))
-            else:
-                out = torch.masked_select(logit, mask).view(-1, size)
-            return out
-
-        def compute_distill_loss_callback(self, student_outputs, teacher_outputs):
-            """
-            Compute distillation loss of student w.r.t teacher outputs.
-            Callback is overrided to support DistilBERT and TinyBERT like distillation
-            """
-            loss = 0
-            if self.ce_alpha != 0:
-                ce_loss = 0
-                for logit_name, weight in zip(self.logit_names, self.weight):
-                    student_logit = student_outputs.get(logit_name)
-                    teacher_logit = teacher_outputs.get(logit_name)
-                    # preprocess LM logits, we consider each token as an example and average the loss over all tokens
-                    vocab_size = self.teacher.config.vocab_size
-                    if len(teacher_logit.size()) > 2 and teacher_logit.size()[-1] == vocab_size:
-                        teacher_logit = self._masked_outputs(
-                            teacher_logit, vocab_size)
-                        student_logit = self._masked_outputs(
-                            student_logit, vocab_size)
-                        assert teacher_logit.size() == student_logit.size()
-                    ce_loss += weight * \
-                        self.compute_cross_entropy_loss(
-                            student_logit, teacher_logit)
-                loss += ce_loss * self.ce_alpha
-            # From distilbert and tinybert. Add loss term with cosine similarity of the embedding output of BERT
-            for key, alpha_dict in zip(['hidden_states', 'attentions'], [self.hidden_alpha, self.attention_alpha]):
-                if alpha_dict is not None:
-                    cosine_loss = 0
-                    for i in range(len(student_outputs.get(key))):
-                        if alpha_dict[i] != 0:
-                            teacher_state = teacher_outputs.get(key)[i]
-                            student_state = student_outputs.get(key)[i]
-                            assert teacher_state.size() == student_state.size()
-                            hidden_size = teacher_state.size(-1)
-                            if key == 'hidden_states':
-                                teacher_state = self._masked_outputs(
-                                    teacher_state, hidden_size)
-                                student_state = self._masked_outputs(
-                                    student_state, hidden_size)
-                            unscaled_loss = self.similarity_loss_fn(
-                                student_state, teacher_state)
-                            cosine_loss += alpha_dict[i] * unscaled_loss
-                    loss += cosine_loss
-            return loss
-
-        def compute_distill_loss(self, student_outputs, teacher_outputs=None):
-            loss = super().compute_distill_loss(
-                student_outputs, teacher_outputs=teacher_outputs)
-            # Delete _input to conserve memory after distillation loss calculation is over
-            del self._input
-            return loss
-
-    def hf_add_teacher_to_student(
-        student,
-        teacher,
-        *,
-        student_alpha=0.5,
-        teacher_ce_alpha=0.5,
-        teacher_ce_loss='kl',
-        teacher_hidden_alpha=None,
-        teacher_attention_alpha=None,
-        teacher_ce_temperature=1.,
-        teacher_similarity_loss='mse',
-        teacher_logit_names='logits',
-        teacher_ce_weights=None,
-        teacher_convert_parameters=True,
-    ):
-        """Add model distillation from teacher to HuggingFace/transformers model"""
-        teacher_sig = inspect.signature(teacher.forward)
-        student_sig = inspect.signature(student.forward)
-        teacher_unique = set(teacher_sig.parameters) - \
-            set(student_sig.parameters)
-        student_unique = set(student_sig.parameters) - \
-            set(teacher_sig.parameters)
-
-        teacher = HFTeacherWrapper(
-            teacher,
-            ce_alpha=teacher_ce_alpha,
-            ce_loss=teacher_ce_loss,
-            hidden_alpha=teacher_hidden_alpha,
-            attention_alpha=teacher_attention_alpha,
-            ce_temperature=teacher_ce_temperature,
-            logit_names=teacher_logit_names,
-            ce_weight=teacher_ce_weights,
-            convert_parameters=teacher_convert_parameters,
-            similarity_loss=teacher_similarity_loss,
-        )
-        student._teacher = teacher
-        student._forward = student.forward
-
-        @wraps(student.forward.__func__)
-        def forward(student, *args, **kwargs):
-            if student.training:
-                if teacher_hidden_alpha is not None:
-                    kwargs.update(output_hidden_states=True)
-                if teacher_attention_alpha is not None:
-                    kwargs.update(output_attentions=True)
-            student_kwargs = {k: kwargs[k]
-                              for k in kwargs if k not in teacher_unique}
-            student_output = student._forward(*args, **student_kwargs)
-            if student.training:
-                teacher_kwargs = {k: kwargs[k]
-                                  for k in kwargs if k not in student_unique}
-                student._teacher(*args, **teacher_kwargs)
-                loss = student_output.loss * student_alpha
-                loss += student._teacher.compute_distill_loss(
-                    student_output)
-                student_output.loss = loss
-            return student_output
-
-        new_sig = student_sig.replace(parameters=list(inspect.signature(
-            student.forward.__func__).parameters.values()) + [teacher_sig.parameters[k] for k in teacher_unique])
-        forward.__signature__ = new_sig
-
-        student.forward = forward.__get__(student)
-        return student
-
-    def hf_remove_teacher_from_student(student):
-        """Remove model distillation and teacher from HuggingFace/transformers model"""
-        student.forward = student._forward
-        del student._teacher
-        del student._forward
-        return student
 
     def hf_collect_logits_from_teacher(
         model,
@@ -469,14 +511,6 @@ try:
         )
         return data
 
-    def hf_sparse_logits_to_dense(sizes, indices, values):
-        """Convert sparse logits to dense."""
-        new_logits = torch.sparse_coo_tensor(
-            indices, values, size=sizes).to_dense()
-        zeros_loc, ninf_loc = new_logits.eq(0.), new_logits.eq(float('inf'))
-        new_logits[zeros_loc] = float('-inf')
-        new_logits[ninf_loc] = 0.
-        return new_logits
 except ModuleNotFoundError:
     def raise_hf_import_error(name):
         raise ImportError(
@@ -486,19 +520,9 @@ except ModuleNotFoundError:
         def __init__(self, *args, **kwargs):
             raise_hf_import_error(self.__class__.__name__)
 
-    class HFTeacherWrapper:
-        def __init__(self, *args, **kwargs):
-            raise_hf_import_error(self.__class__.__name__)
-
     class HFLogitsInDataTeacher:
         def __init__(self, *args, **kwargs):
             raise_hf_import_error(self.__class__.__name__)
-
-    def hf_add_teacher_to_student(*args, **kwargs):
-        raise_hf_import_error(hf_add_teacher_to_student.__name__)
-
-    def hf_remove_teacher_from_student(*args, **kwargs):
-        raise_hf_import_error(hf_remove_teacher_from_student.__name__)
 
     def hf_collect_logits_from_teacher(*args, **kwargs):
         raise_hf_import_error(hf_collect_logits_from_teacher.__name__)
